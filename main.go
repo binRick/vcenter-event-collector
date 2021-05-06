@@ -14,35 +14,34 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/vmware/govmomi/event"
 	"github.com/vmware/govmomi"
+	"github.com/vmware/govmomi/event"
 	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/types"
-
 )
 
 var (
-	begin time.Duration
-	end time.Duration
-	follow bool
-	vcenterUrl string
-	insecure bool
-	username string
-	password string
-	eventCount int
+	begin          time.Duration
+	end            time.Duration
+	follow         bool
+	vcenterUrl     string
+	specified_kind string
+	insecure       bool
+	username       string
+	password       string
+	eventCount     int
 )
 
-
-func init(){
-	flag.DurationVar(&begin, "b", 10 * time.Minute, "Start time of events to be streamed")
+func init() {
+	flag.DurationVar(&begin, "b", 10*time.Minute, "Start time of events to be streamed")
 	flag.DurationVar(&end, "e", 0, "End time of events to be streamed")
+	flag.StringVar(&specified_kind, "k", `all`, "Limit events to this type")
 	flag.BoolVar(&follow, "f", false, "Follow event stream")
 	flag.StringVar(&vcenterUrl, "url", "", "Vcenter URL. i.e. https://localhost/sdk")
 	flag.StringVar(&username, "u", "administrator@vsphere.local", "Vcenter Username")
 	flag.StringVar(&password, "p", "", "Vcenter password")
 	flag.BoolVar(&insecure, "i", true, "Insecure")
-	flag.IntVar(&eventCount, "c", 100,"Number of events to fetch every time.")
-
+	flag.IntVar(&eventCount, "c", 100, "Number of events to fetch every time.")
 
 }
 
@@ -54,7 +53,7 @@ func main() {
 	defer cancel()
 	flag.Parse()
 
-	if vcenterUrl == ""{
+	if vcenterUrl == "" {
 		fmt.Fprintf(os.Stderr, "-url vCenter url is Required\n")
 		os.Exit(1)
 	}
@@ -63,11 +62,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	u, _ :=url.Parse(vcenterUrl)
+	u, _ := url.Parse(vcenterUrl)
 	u.User = url.UserPassword(username, password)
 
 	c, err := govmomi.NewClient(ctx, u, true)
-	if err != nil{
+	if err != nil {
 		fmt.Fprint(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -77,53 +76,59 @@ func main() {
 
 	ref := c.ServiceContent.RootFolder
 
-		now, err := methods.GetCurrentTime(ctx, c) // vCenter server time (UTC)
+	now, err := methods.GetCurrentTime(ctx, c) // vCenter server time (UTC)
+	if err != nil {
+		fmt.Fprint(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	filter := types.EventFilterSpec{
+		EventTypeId: flag.Args(), // e.g. VmEvent
+		Entity: &types.EventFilterSpecByEntity{
+			Entity:    ref,
+			Recursion: types.EventFilterSpecRecursionOptionAll,
+		},
+		Time: &types.EventFilterSpecByTime{
+			BeginTime: types.NewTime(now.Add(begin * -1)),
+		},
+	}
+	if end != 0 {
+		filter.Time.EndTime = types.NewTime(now.Add(end * -1))
+	}
+
+	collector, err := m.CreateCollectorForEvents(ctx, filter)
+	if err != nil {
+		fmt.Fprint(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	defer collector.Destroy(ctx)
+
+	for {
+		events, err := collector.ReadNextEvents(ctx, int32(eventCount))
 		if err != nil {
 			fmt.Fprint(os.Stderr, err)
 			os.Exit(1)
 		}
 
-		filter := types.EventFilterSpec{
-			EventTypeId: flag.Args(), // e.g. VmEvent
-			Entity: &types.EventFilterSpecByEntity{
-				Entity:    ref,
-				Recursion: types.EventFilterSpecRecursionOptionAll,
-			},
-			Time: &types.EventFilterSpecByTime{
-				BeginTime: types.NewTime(now.Add(begin * -1)),
-			},
-		}
-		if end != 0 {
-			filter.Time.EndTime = types.NewTime(now.Add(end * -1))
-		}
-
-		collector, err := m.CreateCollectorForEvents(ctx, filter)
-		if err != nil {
-			fmt.Fprint(os.Stderr, err)
-			os.Exit(1)
-		}
-
-		defer collector.Destroy(ctx)
-
-		for {
-			events, err := collector.ReadNextEvents(ctx, int32(eventCount))
-			if err != nil {
-				fmt.Fprint(os.Stderr, err)
-				os.Exit(1)
+		if len(events) == 0 {
+			if follow {
+				time.Sleep(time.Second)
+				continue
 			}
+			break
+		}
 
-			if len(events) == 0 {
-				if follow {
-					time.Sleep(time.Second)
-					continue
-				}
-				break
+		for i := range events {
+			event := events[i].GetEvent()
+			kind := reflect.TypeOf(events[i]).Elem().Name()
+			show_event := true
+			if specified_kind != `all` && kind != specified_kind {
+				show_event = false
 			}
-
-			for i := range events {
-				event := events[i].GetEvent()
-				kind := reflect.TypeOf(events[i]).Elem().Name()
+			if show_event {
 				fmt.Printf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage)
 			}
 		}
+	}
 }
