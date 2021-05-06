@@ -9,8 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"github.com/gobwas/glob"
+	"github.com/k0kubun/pp"
+	"log"
 	"os"
+	"strings"
 
+	"encoding/json"
 	"net/url"
 	"reflect"
 	"time"
@@ -23,12 +27,16 @@ import (
 
 var (
 	begin               time.Duration
+	begin_dur           time.Duration
+	begin_unit          string
+	begin_qty           int
 	end                 time.Duration
 	follow              bool
 	vcenterUrl          string
 	specified_kind      string
 	specified_msg_match string
 	specified_mode      string
+	specified_format    string
 	insecure            bool
 	username            string
 	password            string
@@ -36,11 +44,13 @@ var (
 )
 
 func init() {
-	flag.DurationVar(&begin, "b", 10*time.Minute, "Start time of events to be streamed")
+	flag.IntVar(&begin_qty, "b", 10, "Begin Start Time quantity")
+	flag.StringVar(&begin_unit, "U", `minute`, "Begin unit, m, d, h, etc")
 	flag.DurationVar(&end, "e", 0, "End time of events to be streamed")
 	flag.StringVar(&specified_kind, "k", `all`, "Limit events to this type")
+	flag.StringVar(&specified_format, "o", `text`, "Output format- text, json")
 	flag.StringVar(&specified_mode, "m", `list`, "Event Display Mode")
-	flag.StringVar(&specified_msg_match, "M", `all`, "Event Message String Match")
+	flag.StringVar(&specified_msg_match, "M", `all`, "Event Message String Match. all, glob format and regex: *vmnic*, *error*, ^ERROR.*, etc.")
 	flag.BoolVar(&follow, "f", false, "Follow event stream")
 	flag.StringVar(&vcenterUrl, "url", "", "Vcenter URL. i.e. https://localhost/sdk")
 	flag.StringVar(&username, "u", "administrator@vsphere.local", "Vcenter Username")
@@ -58,6 +68,14 @@ func main() {
 	defer cancel()
 	flag.Parse()
 	var g glob.Glob
+	switch begin_unit {
+	case "m":
+		begin = time.Duration(int32(begin_qty)) * time.Minute
+	case "h":
+		begin = time.Duration(int32(begin_qty)) * time.Hour * 1
+	case "d":
+		begin = time.Duration(int32(begin_qty)) * time.Hour * 24
+	}
 
 	if vcenterUrl == "" {
 		fmt.Fprintf(os.Stderr, "-url vCenter url is Required\n")
@@ -87,6 +105,7 @@ func main() {
 		fmt.Fprint(os.Stderr, err)
 		os.Exit(1)
 	}
+	fmt.Printf("begin: %s\n", begin)
 
 	filter := types.EventFilterSpec{
 		EventTypeId: flag.Args(), // e.g. VmEvent
@@ -127,7 +146,7 @@ func main() {
 			}
 			break
 		}
-
+		kinds := Kinds{}
 		for i := range events {
 			event := events[i].GetEvent()
 			kind := reflect.TypeOf(events[i]).Elem().Name()
@@ -135,14 +154,101 @@ func main() {
 			if specified_kind != `all` && kind != specified_kind {
 				show_event = false
 			}
-			if specified_msg_match != `all` && !g.Match(event.FullFormattedMessage) {
+			if show_event && specified_msg_match != `all` && !g.Match(event.FullFormattedMessage) {
 				show_event = false
 			}
 			if show_event {
+				kinds.add(kind)
+				output := fmt.Sprintf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage)
+				if specified_format == `json` {
+					output = fmt.Sprintf("json..........")
+				}
 				if specified_mode == `list` {
-					fmt.Printf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage)
+					fmt.Println(output)
 				}
 			}
 		}
+		if specified_mode == `kinds` {
+			fmt.Println(kinds.Output(specified_mode))
+		}
+		if false {
+			pp.Print(kinds)
+		}
 	}
+}
+
+type Kinds struct {
+	names []string
+}
+
+func (K *Kinds) Output(mode string) string {
+	o := `unknown mode`
+	switch mode {
+	case "kinds":
+		return strings.Join(K.names, `, `)
+	}
+	return o
+}
+func (K *Kinds) add(kind string) {
+	has := false
+	for _, k := range K.names {
+		//fmt.Println(k, v)
+		if k == kind {
+			has = true
+			break
+		}
+	}
+	if !has {
+		K.names = append(K.names, kind)
+	}
+}
+
+type Size int
+
+const (
+	Unrecognized Size = iota
+	Small
+	Large
+)
+
+func (s *Size) UnmarshalText(text []byte) error {
+	switch strings.ToLower(string(text)) {
+	default:
+		*s = Unrecognized
+	case "small":
+		*s = Small
+	case "large":
+		*s = Large
+	}
+	return nil
+}
+
+func (s Size) MarshalText() ([]byte, error) {
+	var name string
+	switch s {
+	default:
+		name = "unrecognized"
+	case Small:
+		name = "small"
+	case Large:
+		name = "large"
+	}
+	return []byte(name), nil
+}
+
+func j() {
+	blob := `["small","regular","large","unrecognized","small","normal","small","large"]`
+	var inventory []Size
+	if err := json.Unmarshal([]byte(blob), &inventory); err != nil {
+		log.Fatal(err)
+	}
+
+	counts := make(map[Size]int)
+	for _, size := range inventory {
+		counts[size] += 1
+	}
+
+	fmt.Printf("Inventory Counts:\n* Small:        %d\n* Large:        %d\n* Unrecognized: %d\n",
+		counts[Small], counts[Large], counts[Unrecognized])
+
 }
