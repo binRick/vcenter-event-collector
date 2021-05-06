@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/gobwas/glob"
 	"os"
 
 	"net/url"
@@ -21,21 +22,25 @@ import (
 )
 
 var (
-	begin          time.Duration
-	end            time.Duration
-	follow         bool
-	vcenterUrl     string
-	specified_kind string
-	insecure       bool
-	username       string
-	password       string
-	eventCount     int
+	begin               time.Duration
+	end                 time.Duration
+	follow              bool
+	vcenterUrl          string
+	specified_kind      string
+	specified_msg_match string
+	specified_mode      string
+	insecure            bool
+	username            string
+	password            string
+	eventCount          int
 )
 
 func init() {
 	flag.DurationVar(&begin, "b", 10*time.Minute, "Start time of events to be streamed")
 	flag.DurationVar(&end, "e", 0, "End time of events to be streamed")
 	flag.StringVar(&specified_kind, "k", `all`, "Limit events to this type")
+	flag.StringVar(&specified_mode, "m", `list`, "Event Display Mode")
+	flag.StringVar(&specified_msg_match, "M", `all`, "Event Message String Match")
 	flag.BoolVar(&follow, "f", false, "Follow event stream")
 	flag.StringVar(&vcenterUrl, "url", "", "Vcenter URL. i.e. https://localhost/sdk")
 	flag.StringVar(&username, "u", "administrator@vsphere.local", "Vcenter Username")
@@ -52,6 +57,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	flag.Parse()
+	var g glob.Glob
 
 	if vcenterUrl == "" {
 		fmt.Fprintf(os.Stderr, "-url vCenter url is Required\n")
@@ -103,6 +109,9 @@ func main() {
 	}
 
 	defer collector.Destroy(ctx)
+	if specified_msg_match != `all` {
+		g = glob.MustCompile(specified_msg_match)
+	}
 
 	for {
 		events, err := collector.ReadNextEvents(ctx, int32(eventCount))
@@ -126,8 +135,13 @@ func main() {
 			if specified_kind != `all` && kind != specified_kind {
 				show_event = false
 			}
+			if specified_msg_match != `all` && !g.Match(event.FullFormattedMessage) {
+				show_event = false
+			}
 			if show_event {
-				fmt.Printf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage)
+				if specified_mode == `list` {
+					fmt.Printf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage)
+				}
 			}
 		}
 	}
