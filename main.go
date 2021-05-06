@@ -105,7 +105,7 @@ func main() {
 		fmt.Fprint(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Printf("begin: %s\n", begin)
+	//	fmt.Printf("begin: %s\n", begin)
 
 	filter := types.EventFilterSpec{
 		EventTypeId: flag.Args(), // e.g. VmEvent
@@ -131,7 +131,7 @@ func main() {
 	if specified_msg_match != `all` {
 		g = glob.MustCompile(specified_msg_match)
 	}
-
+	Events := Events{}
 	for {
 		events, err := collector.ReadNextEvents(ctx, int32(eventCount))
 		if err != nil {
@@ -146,60 +146,131 @@ func main() {
 			}
 			break
 		}
-		kinds := Kinds{}
 		for i := range events {
 			event := events[i].GetEvent()
 			kind := reflect.TypeOf(events[i]).Elem().Name()
-			show_event := true
-			if specified_kind != `all` && kind != specified_kind {
-				show_event = false
+			E := Event{
+				Key:        event.Key,
+				Created:    event.CreatedTime.Format(time.ANSIC),
+				Kind:       kind,
+				Show:       true,
+				Message:    event.FullFormattedMessage,
+				TextOutput: fmt.Sprintf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage),
 			}
-			if show_event && specified_msg_match != `all` && !g.Match(event.FullFormattedMessage) {
-				show_event = false
+			if specified_kind != `all` && E.Kind != specified_kind {
+				E.Show = false
 			}
-			if show_event {
-				kinds.add(kind)
-				output := fmt.Sprintf("%d [%s] [%s] %s\n", event.Key, event.CreatedTime.Format(time.ANSIC), kind, event.FullFormattedMessage)
-				if specified_format == `json` {
-					output = fmt.Sprintf("json..........")
-				}
+			if E.Show && specified_msg_match != `all` && !g.Match(event.FullFormattedMessage) {
+				E.Show = false
+			}
+			Events.add_kind(E.Kind)
+			if E.Show {
 				if specified_mode == `list` {
-					fmt.Println(output)
+					fmt.Println(E.Output(specified_mode, specified_format))
 				}
 			}
-		}
-		if specified_mode == `kinds` {
-			fmt.Println(kinds.Output(specified_mode))
-		}
-		if false {
-			pp.Print(kinds)
+			Events.Events = append(Events.Events, E)
+			//			pp.Print(E)
 		}
 	}
+	if Events.ShowSummary() {
+		fmt.Println(Events.Output(specified_mode, specified_format))
+	}
+	if false {
+		pp.Print(Events.Kinds)
+	}
+	//	pp.Print(Events)
+	//	pp.Print(len(Events.Events))
 }
 
-type Kinds struct {
-	names []string
+type Events struct {
+	Events []Event
+	Kinds  []string
 }
 
-func (K *Kinds) Output(mode string) string {
+type Event struct {
+	Key        int32
+	Show       bool
+	Created    string
+	Kind       string
+	Message    string
+	TextOutput string
+}
+
+func (e *Event) Output(mode string, format string) string {
 	o := `unknown mode`
 	switch mode {
+	case "list":
+		switch format {
+		case "json":
+			return fmt.Sprintf("%s", e.JSON())
+		case "text":
+			return fmt.Sprintf("%d [%s] [%s] %s", e.Key, e.Created, e.Kind, e.Message)
+		}
+		return `unknown format`
+	}
+
+	return o
+}
+
+func (e *Event) JSON() string {
+	j, err := json.Marshal(e)
+	if err != nil {
+		panic(err)
+	}
+	s := string(j)
+	return s
+
+}
+func (E *Events) ShowSummary() bool {
+	return (specified_mode == `kinds` || specified_mode == `summary`)
+}
+
+func (E *Events) Output(mode string, format string) string {
+	o := `unknown mode`
+	switch mode {
+	case "summary":
+		switch format {
+		case "json":
+			return fmt.Sprintf("json summamry\n")
+		case "text":
+			return fmt.Sprintf(`
+# Events: %d
+# Kinds:  %d
+
+`,
+				len(E.Events),
+				len(E.Kinds),
+			)
+		}
+		return `unknown format`
 	case "kinds":
-		return strings.Join(K.names, `, `)
+		switch format {
+		case "json":
+			return fmt.Sprintf("json\n")
+		case "text":
+			return strings.Join(E.Kinds, `, `)
+		}
+		return `unknown format`
+	case "list":
+		switch format {
+		case "text":
+			return strings.Join(E.Kinds, `, `)
+		}
+		return `unknown format`
 	}
 	return o
 }
-func (K *Kinds) add(kind string) {
+func (E *Events) add_kind(kind string) {
 	has := false
-	for _, k := range K.names {
-		//fmt.Println(k, v)
+	for _, k := range E.Kinds {
 		if k == kind {
 			has = true
 			break
 		}
 	}
 	if !has {
-		K.names = append(K.names, kind)
+		E.Kinds = append(E.Kinds, kind)
 	}
 }
 
